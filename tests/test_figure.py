@@ -72,6 +72,40 @@ def test_figure_on_plinth_passes_checks(jobenv, monkeypatch, openscad, tmp_path)
     assert "Part ready" in text and "70.0 mm" in text
 
 
+@pytest.fixture(autouse=True)
+def figure_cache(tmp_path, monkeypatch):
+    """Each test gets its own empty shared figure cache, never the machine's."""
+    monkeypatch.setenv("STONE_FIGURE_CACHE", str(tmp_path / "figure-cache"))
+
+
+def test_a_new_job_reuses_a_figure_made_before_without_any_model(tmp_path, monkeypatch):
+    """The same photos and settings in a new job folder: no model runs, the same mesh comes back.
+    This is how a Linux host (no style model) builds a figure made once on the Mac."""
+    photo = tmp_path / "p.jpg"
+    photo.write_bytes(b"jpeg")
+
+    def fake_style(photos, out, *a, **k):
+        shutil.copyfile(photo, out)
+        return out
+
+    monkeypatch.setattr(figure, "describe", lambda p, out, who: out.write_text("") and "")
+    monkeypatch.setattr(figure, "style", fake_style)
+    monkeypatch.setattr(figure, "lift", lambda render, out, seed: standin(out))
+    a = figure.make([photo], tmp_path / "job1" / "fig", say=lambda s: None)
+
+    def no_model(*a, **k):
+        raise figure.FigureProblem("the style model is not set up")
+
+    monkeypatch.setattr(figure, "describe", no_model)
+    monkeypatch.setattr(figure, "style", no_model)
+    monkeypatch.setattr(figure, "lift", no_model)
+    b = figure.make([photo], tmp_path / "job2" / "fig", say=lambda s: None)
+    assert b != a and b.read_bytes() == a.read_bytes()
+    monkeypatch.setenv("STONE_FIGURE_CACHE", "0")
+    with pytest.raises(figure.FigureProblem):
+        figure.make([photo], tmp_path / "job3" / "fig", say=lambda s: None)
+
+
 def test_cached_steps_skip_models(tmp_path, monkeypatch):
     """A second build with the same photos and settings reuses every file and runs no model."""
     photo = tmp_path / "p.jpg"

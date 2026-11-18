@@ -4,8 +4,13 @@ uv run python evals/judge_views.py <run dir or job dir> [--request TEXT]
 
 The judge sees the request text and the two pictures, nothing else: no spec, no log, no grade.
 It runs as `claude -p --model opus` on Donovan's sign-in (ANTHROPIC_API_KEY unset, so no API
-billing), with the Read tool only, in a folder that holds copies of the two pictures. It returns
-{"score": 1-10, "faults": [{"panel", "what"}]}, written to judge.json next to the run.
+billing), with the Read tool only, in a folder that holds copies of the two pictures.
+
+One judge run can name a fault on one pass and not the next, so a verdict is a vote: two runs,
+and a third only when they disagree (`votes`). A fault counts when it is in a picture named in
+`faults_in` (default: boundaries). The majority decides; the score is the median. judge.json next
+to the run holds {"score", "faults" (those of the runs that failed it, when the majority did),
+"pass", "votes": "k of n failed", "runs": [each run]}.
 """
 
 from __future__ import annotations
@@ -15,9 +20,11 @@ import json
 import os
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 RUBRIC = """You judge a 3D printed part painted in a few filament colors, from two rendered pictures.
@@ -52,6 +59,10 @@ Reply with one JSON object and nothing else:
 {{"score": <1-10>, "faults": [{{"panel": "...", "what": "..."}}]}}"""
 
 
+class JudgeFailed(Exception):
+    """The judge could not give a verdict (no claude, a picture missing, a reply with no JSON)."""
+
+
 def find_request(d: Path) -> str:
     for p in (d / "log.json", d.parent / "log.json"):
         if p.exists():
@@ -83,7 +94,7 @@ def judge(build: Path, request: str, model: str = "opus") -> dict:
         for name in ("views.png", "boundaries.png"):
             src = build / name
             if not src.exists():
-                raise SystemExit(f"missing {src}")
+                raise JudgeFailed(f"missing {src}")
             shutil.copy(src, t / name)
         prompt = RUBRIC.format(request=request, views=t / "views.png", boundaries=t / "boundaries.png")
         env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
@@ -92,9 +103,39 @@ def judge(build: Path, request: str, model: str = "opus") -> dict:
                             "--output-format", "json", prompt],
                            capture_output=True, text=True, env=env, cwd=t, timeout=900)
         if p.returncode != 0:
-            raise SystemExit(f"claude exited {p.returncode}: {(p.stderr or p.stdout)[-500:]}")
-        reply = json.loads(p.stdout).get("result", "")
-    return {**parse(reply), "model": model, "request": request}
+            raise JudgeFailed(f"claude exited {p.returncode}: {(p.stderr or p.stdout)[-500:]}")
+        try:
+            return {**parse(json.loads(p.stdout).get("result", "")), "model": model, "request": request}
+        except (ValueError, KeyError, TypeError) as e:
+            raise JudgeFailed(f"the judge's reply had no verdict: {e}") from e
+
+
+def named(res: dict, faults_in: list[str]) -> list[dict]:
+    """The faults of one judge run that are in the pictures `faults_in` names."""
+    return [f for f in res["faults"] if any(f["panel"].lower().startswith(p) for p in faults_in)]
+
+
+def votes(build: Path, request: str, faults_in: list[str] | None = None, n: int = 3, model: str = "opus",
+          one=judge) -> dict:
+    """The majority of up to n blind judge runs: the first ceil(n/2) run together, and more run
+    only while neither side has a majority. A run fails the part when it names a fault in a
+    picture in `faults_in`."""
+    faults_in = faults_in or ["boundaries"]
+    need = n // 2 + 1
+    runs: list[dict] = []
+    with ThreadPoolExecutor(need) as pool:
+        runs += pool.map(lambda _: one(build, request, model), range(need))
+    while len(runs) < n:
+        fails = sum(bool(named(r, faults_in)) for r in runs)
+        if fails >= need or len(runs) - fails >= need:
+            break
+        runs.append(one(build, request, model))
+    fails = [r for r in runs if named(r, faults_in)]
+    failed = len(fails) >= need
+    return {"score": statistics.median(r["score"] for r in runs),
+            "faults": [f for r in fails for f in named(r, faults_in)] if failed else [],
+            "pass": not failed, "votes": f"{len(fails)} of {len(runs)} failed", "runs": runs,
+            "model": model, "request": request}
 
 
 def main() -> None:
@@ -102,10 +143,13 @@ def main() -> None:
     ap.add_argument("run", help="a run folder (with job/) or a job folder")
     ap.add_argument("--request")
     ap.add_argument("--model", default="opus")
+    ap.add_argument("--once", action="store_true", help="one judge run, no vote")
+    ap.add_argument("--faults-in", default="boundaries", help="comma list of pictures whose faults fail the part")
     a = ap.parse_args()
     d = Path(a.run).resolve()
     job = d / "job" if (d / "job" / "build").exists() else d
-    res = judge(job / "build", a.request or find_request(d), a.model)
+    req = a.request or find_request(d)
+    res = judge(job / "build", req, a.model) if a.once else votes(job / "build", req, a.faults_in.split(","), model=a.model)
     (d / "judge.json").write_text(json.dumps(res, indent=1))
     print(json.dumps(res, indent=1))
 

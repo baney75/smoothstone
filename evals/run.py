@@ -306,17 +306,21 @@ def grade_job(job: Path, spec: dict, messages: list | None = None) -> dict:
 
 def judge_run(rdir: Path, job: Path, request: str, want: dict, grade: dict) -> dict:
     """The blind judge on the run's pictures (judge_views.py), saved as judge.json next to the run.
-    want {"faults_in": ["boundaries"]}: a fault the judge names in one of those pictures fails it."""
+    want {"faults_in": ["boundaries"]}: the part fails when most judge runs name a fault in one of
+    those pictures (a vote of up to 3, so one noisy run does not flip it)."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import judge_views
 
-    res = judge_views.judge(job / "build", request)
-    (rdir / "judge.json").write_text(json.dumps(res, indent=1))
     why = [w for w in grade["why"] if w != "all checks pass"]
-    for f in res["faults"]:
-        if any(f["panel"].lower().startswith(pic) for pic in want.get("faults_in", [])):
-            why.append(f"judge: {f['panel']}: {f['what']}")
-    return {**grade, "pass": not why, "why": why or grade["why"], "judge": res["score"]}
+    try:
+        res = judge_views.votes(job / "build", request, want.get("faults_in", ["boundaries"]))
+    except (judge_views.JudgeFailed, subprocess.TimeoutExpired, OSError) as e:
+        # a run the judge could not grade still fails, and still lands in log.json and scores.jsonl
+        (rdir / "judge.json").write_text(json.dumps({"score": None, "error": str(e)}, indent=1))
+        return {**grade, "pass": False, "why": why + [f"judge failed: {e}"], "judge": None}
+    (rdir / "judge.json").write_text(json.dumps(res, indent=1))
+    why += [f"judge: {f['panel']}: {f['what']}" for f in res["faults"]]
+    return {**grade, "pass": not why, "why": why or grade["why"], "judge": res["score"], "judge_votes": res["votes"]}
 
 
 def likeness_run(rdir: Path, job: Path, request: str, grade: dict, least: int | None = None) -> dict:

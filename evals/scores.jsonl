@@ -9,3 +9,5 @@
 {"date": "2026-11-18T14:23:05-0500", "sha": "ba36f4d", "suite": "regressions", "spec": "r2_creality_open_edges", "card": "S", "driver": "next", "pass": 0, "total": 1, "judge": null, "run": "r2_creality_open_edges__next__s1__20261118-142156"}
 {"date": "2026-11-18T14:28:24-0500", "sha": "ba36f4d", "suite": "regressions", "spec": "r1_collar_sawtooth", "card": "S", "driver": "next", "pass": 0, "total": 1, "judge": 7, "run": "r1_collar_sawtooth__next__s1__20261118-142304"}
 {"date": "2026-11-18T14:33:14-0500", "sha": "ba36f4d", "suite": "regressions", "spec": "r2_creality_open_edges", "card": "S", "driver": "next", "pass": 1, "total": 1, "judge": null, "run": "r2_creality_open_edges__next__s1__20261118-142824"}
+{"date": "2026-11-18T18:23:53-0500", "sha": "55263b5", "suite": "figure", "spec": "f1_jensen", "card": "S", "driver": "lfm3", "pass": 0, "total": 1, "judge": null, "run": "f1_jensen__cardS__s1__20261118-182123"}
+{"date": "2026-11-18T18:24:36-0500", "sha": "55263b5", "suite": "figure", "spec": "f2_jensen_colors", "card": "S", "driver": "lfm3", "pass": 0, "total": 1, "judge": null, "run": "f2_jensen_colors__cardS__s1__20261118-182123"}

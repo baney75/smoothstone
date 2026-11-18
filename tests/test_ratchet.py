@@ -43,6 +43,14 @@ def test_a_lower_judge_score_is_below_the_floor(tmp_path, capsys):
     assert "judge score 6.00 is below the floor 8.00" in capsys.readouterr().out
 
 
+def test_a_judge_score_a_point_under_the_floor_is_noise_not_a_regression(tmp_path, capsys):
+    """One vote scoring 8 on a build that once scored 9 is the judge's noise: it must not go red,
+    and it must not lower the floor either."""
+    floor = _floor(tmp_path, {"tuning/S": {"rate": 1.0, "judge": 9.0, "total": 1, "passing": ["t1"]}})
+    assert ratchet.check_runs([_runs(tmp_path, {"t1": True}, judge={"t1": 8})], floor) == 0
+    assert json.loads(floor.read_text())["tuning/S"]["judge"] == 9.0
+
+
 def test_a_run_above_the_floor_raises_it(tmp_path, capsys):
     floor = _floor(tmp_path, {"tuning/S": {"rate": 0.5, "judge": 6.0, "total": 2, "passing": ["t1"]}})
     assert ratchet.check_runs([_runs(tmp_path, {"t1": True, "t2": True}, judge={"t1": 9, "t2": 8})], floor) == 0
