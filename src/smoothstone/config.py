@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import tomllib
 from functools import lru_cache
 from pathlib import Path
@@ -15,6 +16,8 @@ REPO_ROOT = PKG_DIR.parent.parent
 
 # an extracted OpenSCAD AppImage next to the repo or inside it (vendor/openscad/AppRun)
 FALLBACK_OPENSCAD = (REPO_ROOT / "vendor" / "openscad" / "AppRun", REPO_ROOT.parent / "vendor" / "openscad" / "AppRun")
+# macOS installs OpenSCAD as a GUI bundle; the command line binary lives inside it
+MAC_BUNDLES = (Path("/Applications/OpenSCAD.app"), Path.home() / "Applications" / "OpenSCAD.app")
 DEFAULT_BED = (256.0, 256.0, 256.0)
 TIERS = ("S", "M", "L")
 
@@ -37,14 +40,70 @@ def job_dir(arg: str | None = None) -> Path:
     return Path(raw).expanduser().resolve()
 
 
+def app_binary(bundle: Path) -> Path | None:
+    """The command line binary inside a macOS OpenSCAD .app bundle, or None."""
+    if not bundle.is_dir() or bundle.suffix != ".app":
+        return None
+    for name in (bundle.stem, "OpenSCAD"):
+        exe = bundle / "Contents" / "MacOS" / name
+        if exe.is_file() and os.access(exe, os.X_OK):
+            return exe
+    return None
+
+
+def openscad_candidates() -> tuple[Path, ...]:
+    """Places stone looks for OpenSCAD when the env and PATH have neither."""
+    if sys.platform != "darwin":
+        return FALLBACK_OPENSCAD
+    bundles = [app_binary(b) or b for b in MAC_BUNDLES]
+    if not any(p.is_file() for p in bundles):
+        # not in the usual folders: ask Spotlight where the bundle is registered. Spotlight
+        # answers without Apple Events, so no Automation permission prompt (unlike osascript)
+        extra = spotlight_binary()
+        if extra:
+            bundles.append(extra)
+    return tuple(bundles + list(FALLBACK_OPENSCAD))
+
+
+@lru_cache(maxsize=1)
+def spotlight_binary() -> Path | None:
+    """The executable inside an OpenSCAD.app that Spotlight has indexed, or None.
+
+    Spotlight can list several copies, including half installed leftovers, so keep looking
+    until one of them really has a binary.
+    """
+    try:
+        out = subprocess.run(
+            ["/usr/bin/mdfind", f"kMDItemCFBundleIdentifier == 'org.openscad.OpenSCAD'"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in (out.stdout or "").splitlines():
+        bundle = Path(line.strip())
+        if bundle.suffix == ".app" and bundle.is_dir():
+            exe = app_binary(bundle)
+            if exe:
+                return exe.resolve()
+    return None
+
+
 def find_openscad() -> str | None:
     env = os.environ.get("STONE_OPENSCAD")
     if env:
-        return env if Path(env).exists() or shutil.which(env) else None
+        p = Path(env).expanduser()
+        if p.is_dir():  # a .app bundle, or the app folder that holds one
+            exe = app_binary(p)
+            return str(exe.resolve()) if exe else None
+        if p.is_file():
+            # absolute: OpenSCAD runs inside the recipe folder, so "./openscad" would otherwise be
+            # looked up on PATH instead of being the file the caller named
+            return str(p.resolve())
+        return shutil.which(env)
     found = shutil.which("openscad")
     if found:
         return found
-    return next((str(p) for p in FALLBACK_OPENSCAD if p.exists()), None)
+    return next((str(p) for p in openscad_candidates() if p.is_file()), None)
 
 
 @lru_cache(maxsize=8)
