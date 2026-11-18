@@ -411,7 +411,7 @@ def _remesh(m):
     return v.marching_cubes.apply_transform(v.transform)
 
 
-CACHED = ("look.txt", "style.png", "lift.glb", "figure.stl", "figure.json")
+CACHED = ("look.txt", "style.png", "lift.glb", "figure.json", "figure.stl")  # figure.stl last: it marks a whole copy
 REPAIR_VERSION = 1  # bump whenever repair() changes what it writes: old cached figures stop matching
 
 
@@ -422,34 +422,50 @@ def cache_dir() -> Path | None:
     return Path(env).expanduser() if env else Path.home() / ".cache" / "stone-figure"
 
 
-def cache_key(key: str) -> str:
-    """The folder key plus every setting outside it that changes the finished mesh."""
-    e = os.environ.get
-    model = e("STONE_STYLE_MODEL")
-    return _digest(key, e("STONE_STYLE_REFS", "1"), Path(model).name if model else "",
-                   e("STONE_LIFT_OCTREE", "256"), e("STONE_LIFT_CHUNKS", "4000"),
-                   e("STONE_DESCRIBE", "1") != "0", REPAIR_VERSION)
-
-
-def _from_cache(key: str, folder: Path) -> bool:
-    c = cache_dir()
-    if c is None:
+def _can_style() -> bool:
+    try:
+        _mflux_bin()
+        return True
+    except FigureProblem:
         return False
-    k = cache_key(key)
-    if not (c / k / "figure.stl").exists():
+
+
+def _model_id(env: str | None) -> str:
+    """A custom style model by its path and the sizes of its weight files; "" for the default."""
+    if not env:
+        return ""
+    p = Path(env).expanduser()
+    files = sorted(p.rglob("*.safetensors")) if p.is_dir() else []
+    return str(p.resolve()) + ":" + ",".join(str(f.stat().st_size) for f in files)
+
+
+def cache_key(key: str) -> str:
+    """The folder key plus every setting outside it that changes the finished mesh. Describe counts
+    as it will really run here; a host with no style model can only reuse a figure, so it asks
+    for one made as its settings request."""
+    e = os.environ.get
+    describe = e("STONE_DESCRIBE", "1") != "0" and (_describe_model() is not None or not _can_style())
+    return _digest(key, e("STONE_STYLE_REFS", "1"), _model_id(e("STONE_STYLE_MODEL")), e("STONE_LIFT") or "",
+                   e("STONE_LIFT_OCTREE", "256"), e("STONE_LIFT_CHUNKS", "4000"), describe, REPAIR_VERSION)
+
+
+def _from_cache(folder: Path) -> bool:
+    c = cache_dir()
+    if c is None or not (c / folder.name / "figure.stl").exists():
         return False
     for name in CACHED:
-        if (c / k / name).exists() and not (folder / name).exists():
-            shutil.copyfile(c / k / name, folder / name)
+        src = c / folder.name / name
+        if src.exists() and not (folder / name).exists():
+            tmp = folder / f".{name}.tmp{os.getpid()}"
+            shutil.copyfile(src, tmp)
+            os.replace(tmp, folder / name)  # a killed copy never leaves a short figure.stl
     return True
 
 
-def _to_cache(key: str, folder: Path) -> None:
+def _to_cache(folder: Path) -> None:
     c = cache_dir()
-    if c is None:
-        return
-    key = cache_key(key)
-    if (c / key / "figure.stl").exists():
+    key = folder.name
+    if c is None or (c / key / "figure.stl").exists():
         return
     try:
         tmp = c / f".{key}.tmp{os.getpid()}"
@@ -472,11 +488,13 @@ def make(photos: list[Path], folder: Path, style_name: str = "chibi", who: str =
     photos, want = screen(list(photos), who, folder, say)
     key = _digest(*photos, style_name, who, seed, extra,
                   prompt(style_name, who, extra, (want or {}).get("glasses")))
-    folder = folder / key
+    # the folder is named by the cache key, so a change of mesh settings starts a fresh folder and
+    # the files in it always match the key they are cached under
+    folder = folder / cache_key(key)
     folder.mkdir(parents=True, exist_ok=True)
     fig = folder / "figure.stl"
     latest = folder.parent / "latest.txt"
-    if not fig.exists() and _from_cache(key, folder):
+    if not fig.exists() and _from_cache(folder):
         say("Using the figure made before from these photos (shared cache).")
     if fig.exists():
         latest.write_text(str(fig) + "\n")
@@ -502,6 +520,6 @@ def make(photos: list[Path], folder: Path, style_name: str = "chibi", who: str =
         lift(render, mesh, seed)
     if not fig.exists():
         repair(mesh, fig)
-    _to_cache(key, folder)
+    _to_cache(folder)
     latest.write_text(str(fig) + "\n")
     return fig

@@ -103,10 +103,13 @@ def judge(build: Path, request: str, model: str = "opus") -> dict:
             shutil.copy(src, t / name)
         prompt = RUBRIC.format(request=request, views=t / "views.png", boundaries=t / "boundaries.png")
         env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-        p = subprocess.run(["claude", "-p", "--model", model, "--tools", "Read", "--allowedTools", "Read",
-                            "--strict-mcp-config", "--no-session-persistence", "--add-dir", str(t),
-                            "--output-format", "json", prompt],
-                           capture_output=True, text=True, env=env, cwd=t, timeout=900)
+        try:
+            p = subprocess.run(["claude", "-p", "--model", model, "--tools", "Read", "--allowedTools", "Read",
+                                "--strict-mcp-config", "--no-session-persistence", "--add-dir", str(t),
+                                "--output-format", "json", prompt],
+                               capture_output=True, text=True, env=env, cwd=t, timeout=900)
+        except (subprocess.TimeoutExpired, OSError) as e:
+            raise JudgeFailed(f"claude did not answer: {e}") from e
         if p.returncode != 0:
             raise JudgeFailed(f"claude exited {p.returncode}: {(p.stderr or p.stdout)[-500:]}")
         try:
@@ -171,7 +174,7 @@ def main() -> None:
     d = Path(a.run).resolve()
     job = d / "job" if (d / "job" / "build").exists() else d
     req = a.request or find_request(d)
-    res = judge(job / "build", req, a.model) if a.once else votes(job / "build", req, a.faults_in.split(","), model=a.model)
+    res = judge(job / "build", req, a.model) if a.once else votes(job / "build", req, [x for x in a.faults_in.split(",") if x], model=a.model)
     (d / "judge.json").write_text(json.dumps(res, indent=1))
     print(json.dumps(res, indent=1))
 

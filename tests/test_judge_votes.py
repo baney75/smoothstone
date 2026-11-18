@@ -124,3 +124,20 @@ def test_a_reply_of_the_wrong_shape_is_a_judge_failure():
         with pytest.raises(ValueError):
             judge_views.parse(reply)
     assert judge_views.parse('{"score": 8, "faults": [{"panel": "views front", "what": "x"}]}')["score"] == 8
+
+
+def test_a_judge_run_that_times_out_is_a_judge_failure(tmp_path, monkeypatch):
+    """PR 8 review r2 first-F2: a slow Opus reply is replaced like any failed run."""
+    import subprocess
+
+    import pytest
+
+    for name in ("views.png", "boundaries.png"):
+        (tmp_path / name).write_bytes(b"png")
+
+    def slow(*a, **k):
+        raise subprocess.TimeoutExpired("claude", 900)
+
+    monkeypatch.setattr(subprocess, "run", slow)
+    with pytest.raises(judge_views.JudgeFailed):
+        judge_views.judge(tmp_path, "req")

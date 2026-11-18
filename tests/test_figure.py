@@ -102,7 +102,7 @@ def test_a_new_job_reuses_a_figure_made_before_without_any_model(tmp_path, monke
     b = figure.make([photo], tmp_path / "job2" / "fig", say=lambda s: None)
     assert b != a and b.read_bytes() == a.read_bytes()
     # only the finished mesh copied in (no style.png, no lift.glb): still no model
-    c = figure.cache_dir() / figure.cache_key(a.parent.name)
+    c = figure.cache_dir() / a.parent.name
     for name in ("style.png", "lift.glb", "look.txt"):
         (c / name).unlink()
     assert figure.make([photo], tmp_path / "job4" / "fig", say=lambda s: None).read_bytes() == a.read_bytes()
@@ -141,6 +141,53 @@ def test_a_setting_that_changes_the_mesh_misses_the_cache(tmp_path, monkeypatch)
     monkeypatch.delenv("STONE_LIFT")
     figure.make([photo], tmp_path / "job5" / "fig", say=lambda s: None)
     assert calls == ["lift", "lift", "lift", "lift"], "a stand-in lift's mesh was cached"
+
+
+def test_a_rerun_with_other_settings_never_caches_the_old_files(tmp_path, monkeypatch):
+    """PR 8 review r2 first-F1: a stand-in lift writes lift.glb and repair dies; the rerun with a
+    real lift must lift again, not repair the stand-in mesh and cache it as real."""
+    photo = tmp_path / "p.jpg"
+    photo.write_bytes(b"jpeg")
+    calls = []
+
+    def fake_style(photos, out, *a, **k):
+        shutil.copyfile(photo, out)
+        return out
+
+    def fake_lift(render, out, seed):
+        calls.append("lift")
+        return standin(out)
+
+    monkeypatch.setattr(figure, "describe", lambda p, out, who: out.write_text("") and "")
+    monkeypatch.setattr(figure, "style", fake_style)
+    monkeypatch.setattr(figure, "lift", fake_lift)
+    real_repair = figure.repair
+
+    def dies(*a, **k):
+        raise figure.FigureProblem("repair died")
+
+    monkeypatch.setattr(figure, "repair", dies)
+    monkeypatch.setenv("STONE_LIFT", "python standin.py")
+    with pytest.raises(figure.FigureProblem):
+        figure.make([photo], tmp_path / "job" / "fig", say=lambda s: None)
+    monkeypatch.delenv("STONE_LIFT")
+    monkeypatch.setattr(figure, "repair", real_repair)
+    figure.make([photo], tmp_path / "job" / "fig", say=lambda s: None)
+    assert calls == ["lift", "lift"], "the stand-in lift.glb was reused for the real figure"
+
+
+def test_a_figure_made_without_a_description_is_not_one_made_with_it(tmp_path, monkeypatch):
+    """PR 8 review r2 second-S2: a host that can style but has no describe model files its figure
+    under another key than a host that described the photo."""
+    monkeypatch.setattr(figure, "_can_style", lambda: True)
+    monkeypatch.setattr(figure, "_describe_model", lambda: None)
+    without = figure.cache_key("k")
+    monkeypatch.setattr(figure, "_describe_model", lambda: tmp_path)
+    assert figure.cache_key("k") != without
+    # a host that cannot style at all asks for the figure its settings request: described
+    monkeypatch.setattr(figure, "_can_style", lambda: False)
+    monkeypatch.setattr(figure, "_describe_model", lambda: None)
+    assert figure.cache_key("k") != without
 
 
 def test_cached_steps_skip_models(tmp_path, monkeypatch):
