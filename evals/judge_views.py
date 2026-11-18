@@ -81,11 +81,16 @@ def parse(text: str) -> dict:
     if not m:
         raise ValueError("no JSON in the judge's reply")
     out = json.loads(m.group(0))
+    if not isinstance(out, dict) or isinstance(out.get("score"), bool) or not isinstance(out.get("score"), (int, float)):
+        raise ValueError(f"no number score in {m.group(0)[:200]}")
     score = int(out["score"])
     if not 1 <= score <= 10:
         raise ValueError(f"score {score} outside 1..10")
-    faults = [{"panel": str(f.get("panel", "")), "what": str(f.get("what", ""))} for f in out.get("faults", [])]
-    return {"score": score, "faults": faults}
+    raw = out.get("faults", [])
+    if not isinstance(raw, list) or not all(isinstance(f, dict) and isinstance(f.get("panel"), str)
+                                            and isinstance(f.get("what", ""), str) for f in raw):
+        raise ValueError(f"faults are not a list of {{panel, what}}: {str(raw)[:200]}")
+    return {"score": score, "faults": [{"panel": f["panel"], "what": f.get("what", "")} for f in raw]}
 
 
 def judge(build: Path, request: str, model: str = "opus") -> dict:
@@ -119,23 +124,40 @@ def votes(build: Path, request: str, faults_in: list[str] | None = None, n: int 
           one=judge) -> dict:
     """The majority of up to n blind judge runs: the first ceil(n/2) run together, and more run
     only while neither side has a majority. A run fails the part when it names a fault in a
-    picture in `faults_in`."""
-    faults_in = faults_in or ["boundaries"]
+    picture in `faults_in` (default: boundaries; [] counts no picture). A judge run that fails
+    (JudgeFailed) is replaced, up to n tries in all; JudgeFailed only when no majority is left."""
+    if faults_in is None:
+        faults_in = ["boundaries"]
     need = n // 2 + 1
     runs: list[dict] = []
+    errors: list[str] = []
+
+    def try_one(_=None):
+        try:
+            return one(build, request, model)
+        except JudgeFailed as e:
+            errors.append(str(e))
+            return None
+
     with ThreadPoolExecutor(need) as pool:
-        runs += pool.map(lambda _: one(build, request, model), range(need))
-    while len(runs) < n:
+        runs += [r for r in pool.map(try_one, range(need)) if r is not None]
+    tries = need
+    while tries < n:
         fails = sum(bool(named(r, faults_in)) for r in runs)
         if fails >= need or len(runs) - fails >= need:
             break
-        runs.append(one(build, request, model))
+        tries += 1
+        r = try_one()
+        if r is not None:
+            runs.append(r)
     fails = [r for r in runs if named(r, faults_in)]
+    if len(fails) < need and len(runs) - len(fails) < need:
+        raise JudgeFailed(f"no majority from {len(runs)} verdicts in {tries} tries: " + "; ".join(errors))
     failed = len(fails) >= need
     return {"score": statistics.median(r["score"] for r in runs),
             "faults": [f for r in fails for f in named(r, faults_in)] if failed else [],
             "pass": not failed, "votes": f"{len(fails)} of {len(runs)} failed", "runs": runs,
-            "model": model, "request": request}
+            "errors": errors, "model": model, "request": request}
 
 
 def main() -> None:

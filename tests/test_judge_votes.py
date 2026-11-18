@@ -80,3 +80,47 @@ def test_a_reply_with_no_verdict_is_a_judge_failure_not_an_exit(tmp_path, monkey
 
     with pytest.raises(judge_views.JudgeFailed):
         judge_views.judge(tmp_path, "req")
+
+
+def test_one_judge_run_that_errors_is_replaced_not_fatal():
+    """PR 8 review first-F3: [JudgeFailed, pass, pass] is a pass, not "judge failed"."""
+    seq = iter([judge_views.JudgeFailed("rate limited"), False, False])
+
+    def one(build, request, model):
+        x = next(seq)
+        if isinstance(x, Exception):
+            raise x
+        return {"score": 9, "faults": []}
+
+    res = judge_views.votes(Path("."), "req", one=one)
+    assert res["pass"] and res["votes"] == "0 of 2 failed" and res["errors"] == ["rate limited"]
+
+
+def test_too_many_judge_errors_is_a_judge_failure():
+    import pytest
+
+    def one(build, request, model):
+        raise judge_views.JudgeFailed("not signed in")
+
+    with pytest.raises(judge_views.JudgeFailed):
+        judge_views.votes(Path("."), "req", one=one)
+
+
+def test_an_empty_faults_in_counts_no_picture():
+    """PR 8 review first-F2: "faults_in": [] (or a judge spec with none) only scores."""
+    def one(build, request, model):
+        return {"score": 7, "faults": [{"panel": "boundaries row 1", "what": "notch"}]}
+
+    assert judge_views.votes(Path("."), "req", [], one=one)["pass"]
+
+
+def test_a_reply_of_the_wrong_shape_is_a_judge_failure():
+    """PR 8 review first-F1: valid JSON with a fault missing its panel, a plain string fault, or a
+    score like "7/10" must not escape as a KeyError later."""
+    import pytest
+
+    for reply in ('{"score": 7, "faults": [{"where": "boundaries", "what": "notch"}]}',
+                  '{"score": 7, "faults": ["a notch"]}', '{"score": "7/10", "faults": []}'):
+        with pytest.raises(ValueError):
+            judge_views.parse(reply)
+    assert judge_views.parse('{"score": 8, "faults": [{"panel": "views front", "what": "x"}]}')["score"] == 8

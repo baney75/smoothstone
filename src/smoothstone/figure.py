@@ -10,11 +10,13 @@ Local models do the work, none of them the model that drives stone:
 - lift: tools/lift/lift.py turns that render into a mesh (single-image 3D).
 - repair: trimesh keeps the main body, closes it and scales it to unit height, feet on z = 0.
 
-Every step writes its file into the job's images/figure folder and is skipped when the file is
+Every step writes its file into the job's image/figure folder and is skipped when the file is
 already there and its inputs have not changed, so a build that dies half way picks up again.
 A finished figure is also kept in a shared cache (STONE_FIGURE_CACHE, default
-~/.cache/stone-figure; "0" turns it off) under the same key, so a new job with the same photos and
-settings reuses it instead of running the models again. A machine without the style model (Linux
+~/.cache/stone-figure; "0" turns it off) under that key plus every setting that changes the mesh
+(style refs and model, lift octree and chunks, describe on or off, REPAIR_VERSION), so a new job with
+the same photos and settings reuses it instead of running the models again. A stand-in lift
+(STONE_LIFT) never reads or writes it. A machine without the style model (Linux
 has no mflux) can build a figure that was made once elsewhere, by copying that key folder in.
 """
 
@@ -410,28 +412,44 @@ def _remesh(m):
 
 
 CACHED = ("look.txt", "style.png", "lift.glb", "figure.stl", "figure.json")
+REPAIR_VERSION = 1  # bump whenever repair() changes what it writes: old cached figures stop matching
 
 
 def cache_dir() -> Path | None:
     env = os.environ.get("STONE_FIGURE_CACHE")
-    if env == "0":
-        return None
+    if env == "0" or os.environ.get("STONE_LIFT"):
+        return None  # off, or a stand-in lift whose mesh must never pass for a real one
     return Path(env).expanduser() if env else Path.home() / ".cache" / "stone-figure"
+
+
+def cache_key(key: str) -> str:
+    """The folder key plus every setting outside it that changes the finished mesh."""
+    e = os.environ.get
+    model = e("STONE_STYLE_MODEL")
+    return _digest(key, e("STONE_STYLE_REFS", "1"), Path(model).name if model else "",
+                   e("STONE_LIFT_OCTREE", "256"), e("STONE_LIFT_CHUNKS", "4000"),
+                   e("STONE_DESCRIBE", "1") != "0", REPAIR_VERSION)
 
 
 def _from_cache(key: str, folder: Path) -> bool:
     c = cache_dir()
-    if c is None or not (c / key / "figure.stl").exists():
+    if c is None:
+        return False
+    k = cache_key(key)
+    if not (c / k / "figure.stl").exists():
         return False
     for name in CACHED:
-        if (c / key / name).exists() and not (folder / name).exists():
-            shutil.copyfile(c / key / name, folder / name)
+        if (c / k / name).exists() and not (folder / name).exists():
+            shutil.copyfile(c / k / name, folder / name)
     return True
 
 
 def _to_cache(key: str, folder: Path) -> None:
     c = cache_dir()
-    if c is None or (c / key / "figure.stl").exists():
+    if c is None:
+        return
+    key = cache_key(key)
+    if (c / key / "figure.stl").exists():
         return
     try:
         tmp = c / f".{key}.tmp{os.getpid()}"
@@ -456,8 +474,13 @@ def make(photos: list[Path], folder: Path, style_name: str = "chibi", who: str =
                   prompt(style_name, who, extra, (want or {}).get("glasses")))
     folder = folder / key
     folder.mkdir(parents=True, exist_ok=True)
-    if not (folder / "figure.stl").exists() and _from_cache(key, folder):
+    fig = folder / "figure.stl"
+    latest = folder.parent / "latest.txt"
+    if not fig.exists() and _from_cache(key, folder):
         say("Using the figure made before from these photos (shared cache).")
+    if fig.exists():
+        latest.write_text(str(fig) + "\n")
+        return fig  # a finished figure needs no model, even with the style and lift files gone
     render = folder / "style.png"
     if not render.exists():
         desc = ""
@@ -477,10 +500,8 @@ def make(photos: list[Path], folder: Path, style_name: str = "chibi", who: str =
     if not mesh.exists():
         say("Lifting the render to 3D (Hunyuan3D-2mini, about 4 minutes)...")
         lift(render, mesh, seed)
-    fig = folder / "figure.stl"
     if not fig.exists():
         repair(mesh, fig)
     _to_cache(key, folder)
-    latest = folder.parent / "latest.txt"
     latest.write_text(str(fig) + "\n")
     return fig

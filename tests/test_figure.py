@@ -101,9 +101,46 @@ def test_a_new_job_reuses_a_figure_made_before_without_any_model(tmp_path, monke
     monkeypatch.setattr(figure, "lift", no_model)
     b = figure.make([photo], tmp_path / "job2" / "fig", say=lambda s: None)
     assert b != a and b.read_bytes() == a.read_bytes()
+    # only the finished mesh copied in (no style.png, no lift.glb): still no model
+    c = figure.cache_dir() / figure.cache_key(a.parent.name)
+    for name in ("style.png", "lift.glb", "look.txt"):
+        (c / name).unlink()
+    assert figure.make([photo], tmp_path / "job4" / "fig", say=lambda s: None).read_bytes() == a.read_bytes()
     monkeypatch.setenv("STONE_FIGURE_CACHE", "0")
     with pytest.raises(figure.FigureProblem):
         figure.make([photo], tmp_path / "job3" / "fig", say=lambda s: None)
+
+
+def test_a_setting_that_changes_the_mesh_misses_the_cache(tmp_path, monkeypatch):
+    """PR 8 review second-S1: a different lift octree must run the lift again, and a stand-in lift
+    (STONE_LIFT) must never write a mesh into the shared cache."""
+    photo = tmp_path / "p.jpg"
+    photo.write_bytes(b"jpeg")
+    calls = []
+
+    def fake_style(photos, out, *a, **k):
+        shutil.copyfile(photo, out)
+        return out
+
+    def fake_lift(render, out, seed):
+        calls.append("lift")
+        return standin(out)
+
+    monkeypatch.setattr(figure, "describe", lambda p, out, who: out.write_text("") and "")
+    monkeypatch.setattr(figure, "style", fake_style)
+    monkeypatch.setattr(figure, "lift", fake_lift)
+    figure.make([photo], tmp_path / "job1" / "fig", say=lambda s: None)
+    figure.make([photo], tmp_path / "job2" / "fig", say=lambda s: None)
+    assert calls == ["lift"]
+    monkeypatch.setenv("STONE_LIFT_OCTREE", "384")
+    figure.make([photo], tmp_path / "job3" / "fig", say=lambda s: None)
+    assert calls == ["lift", "lift"]
+    monkeypatch.setenv("STONE_LIFT", "python standin.py")
+    monkeypatch.setenv("STONE_LIFT_OCTREE", "512")
+    figure.make([photo], tmp_path / "job4" / "fig", say=lambda s: None)
+    monkeypatch.delenv("STONE_LIFT")
+    figure.make([photo], tmp_path / "job5" / "fig", say=lambda s: None)
+    assert calls == ["lift", "lift", "lift", "lift"], "a stand-in lift's mesh was cached"
 
 
 def test_cached_steps_skip_models(tmp_path, monkeypatch):
