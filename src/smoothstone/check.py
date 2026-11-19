@@ -48,10 +48,17 @@ def load_off(path) -> "trimesh.Trimesh":
     lines = [ln for ln in Path(path).read_text().splitlines() if ln.strip() and not ln.startswith("#")]
     if not lines or not lines[0].startswith("OFF"):
         raise ValueError("not an OFF file")
-    nv, nf = (int(w) for w in lines[1].split()[:2])
-    verts = np.array([ln.split()[:3] for ln in lines[2:2 + nv]], dtype=float).reshape(nv, 3)
+    # OFF allows the counts on the header line itself ("OFF nv nf ne"), which newer OpenSCAD writes.
+    head = lines[0].split()
+    if len(head) >= 3:
+        nv, nf = int(head[1]), int(head[2])
+        body = lines[1:]
+    else:
+        nv, nf = (int(w) for w in lines[1].split()[:2])
+        body = lines[2:]
+    verts = np.array([ln.split()[:3] for ln in body[:nv]], dtype=float).reshape(nv, 3)
     tris = []
-    for ln in lines[2 + nv:2 + nv + nf]:
+    for ln in body[nv:nv + nf]:
         w = ln.split()  # count, indices, then optional face color
         k = int(w[0])
         idx = [int(x) for x in w[1:1 + k]]
