@@ -248,6 +248,9 @@ def main():
         grade = judge_run(rdir, job, spec["request"], exp["judge"], grade)
     if exp.get("recipe") == "figure" and grade["pass"]:
         grade = likeness_run(rdir, job, spec["request"], grade, (exp.get("likeness") or {}).get("min"))
+    # a figure from the shared cache ran no style or lift model in this run: say so in the log
+    jl = job / "log.txt"
+    log["figure_from_cache"] = jl.exists() and "(shared cache)" in jl.read_text(errors="replace")
     log.update({"seconds": round(time.time() - t0, 1), **grade, "messages": messages})
     (rdir / "log.json").write_text(json.dumps(log, indent=1))
     append_score(log)
@@ -306,17 +309,22 @@ def grade_job(job: Path, spec: dict, messages: list | None = None) -> dict:
 
 def judge_run(rdir: Path, job: Path, request: str, want: dict, grade: dict) -> dict:
     """The blind judge on the run's pictures (judge_views.py), saved as judge.json next to the run.
-    want {"faults_in": ["boundaries"]}: a fault the judge names in one of those pictures fails it."""
+    want {"faults_in": ["boundaries"]}: the part fails when most judge runs name a fault in one of
+    those pictures (a vote of up to 3, so one noisy run does not flip it). With no faults_in the
+    judge only scores."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import judge_views
 
-    res = judge_views.judge(job / "build", request)
-    (rdir / "judge.json").write_text(json.dumps(res, indent=1))
     why = [w for w in grade["why"] if w != "all checks pass"]
-    for f in res["faults"]:
-        if any(f["panel"].lower().startswith(pic) for pic in want.get("faults_in", [])):
-            why.append(f"judge: {f['panel']}: {f['what']}")
-    return {**grade, "pass": not why, "why": why or grade["why"], "judge": res["score"]}
+    try:
+        res = judge_views.votes(job / "build", request, want.get("faults_in", []))
+    except (judge_views.JudgeFailed, subprocess.TimeoutExpired, OSError) as e:
+        # a run the judge could not grade still fails, and still lands in log.json and scores.jsonl
+        (rdir / "judge.json").write_text(json.dumps({"score": None, "error": str(e)}, indent=1))
+        return {**grade, "pass": False, "why": why + [f"judge failed: {e}"], "judge": None}
+    (rdir / "judge.json").write_text(json.dumps(res, indent=1))
+    why += [f"judge: {f['panel']}: {f['what']}" for f in res["faults"]]
+    return {**grade, "pass": not why, "why": why or grade["why"], "judge": res["score"], "judge_votes": res["votes"]}
 
 
 def likeness_run(rdir: Path, job: Path, request: str, grade: dict, least: int | None = None) -> dict:

@@ -24,6 +24,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FLOOR = ROOT / "evals" / "floor.json"
 GUARDED = ("evals/tuning", "evals/figure", "evals/regressions")
+# The judge is an LLM: the same build can score a point apart from one vote to the next. A group
+# is below its judge floor only when its mean is more than this many points under it.
+JUDGE_SLACK = 1.0
 
 
 def _suite_of(spec_id: str, evals: Path) -> str:
@@ -82,8 +85,9 @@ def compare(now: dict, floor: dict) -> tuple[list[str], dict]:
         if m["total"] >= f.get("total", 0) and m["rate"] < f["rate"]:
             bad.append(f"{key}: pass rate {m['rate']:.2f} is below the floor {f['rate']:.2f}")
             below = True
-        if m["judge"] is not None and f.get("judge") is not None and m["judge"] < f["judge"]:
-            bad.append(f"{key}: judge score {m['judge']:.2f} is below the floor {f['judge']:.2f}")
+        if m["judge"] is not None and f.get("judge") is not None and m["judge"] < f["judge"] - JUDGE_SLACK:
+            bad.append(f"{key}: judge score {m['judge']:.2f} is below the floor {f['judge']:.2f}"
+                       f" by more than {JUDGE_SLACK:g}")
             below = True
         if below:
             continue

@@ -23,13 +23,21 @@ counts as card "next"), the best pass rate and mean judge score so far and the s
   added to LOG.md names it and says why.
 - `regressions/`: each fault the owner reports, as a spec that fails on it before the fix merges, with
   his words in `why`. A spec with `"judge": {"faults_in": ["boundaries"]}` runs `judge_views.py` (a
-  blind Opus judge that sees only the request, views.png and boundaries.png) and fails on any fault it
-  names in those pictures; the verdict is saved as judge.json next to the run.
+  blind Opus judge that sees only the request, views.png and boundaries.png) and fails when the judge
+  names a fault in those pictures. The judge is an LLM, so its verdict is a vote: two runs, and a
+  third only when they disagree; the majority decides and the score is the median. A judge that
+  cannot answer fails the run with the reason. The verdict is saved as judge.json next to the run.
+  The ratchet counts a judge mean as below its floor only when it is more than 1 point under it.
 - Every figure spec also runs `judge_likeness.py`: Opus names the Wikipedia article the request
   means (text only), the harness fetches that article's lead image, and a blind Opus run compares
   the render the figure was made from with it, feature by feature (hair, facial hair, glasses, skin,
   age, clothes). Below 6 of 10 the run fails with the judge's conflicts; a judge that cannot answer
   fails it too. The tool's own photos are never the reference: for "DHH" it once styled a protein,
   and every other check passed the made up man it sculpted. The verdict is likeness.json.
+- Figures on a host without the style model (Linux has no mflux): `stone build` reuses a figure from
+  the shared cache (~/.cache/stone-figure/<cache key>, `STONE_FIGURE_CACHE`) when the same photos
+  and mesh settings were built before (`figure.cache_key` of the job's image/figure/<key> folder).
+  Everything after the mesh (plinth, checks, parts, paint) still runs fresh. log.json says
+  `figure_from_cache` when a run used it.
 - A spec with `"colors": {"black": ["jacket"], "rest": "white"}` checks the painted 3MF: it reads back
   clean, its color edges pass, and every part prints in the color asked for.
